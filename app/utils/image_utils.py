@@ -5,14 +5,15 @@ import os
 import cv2
 import numpy as np
 from datetime import datetime
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtCore import Qt
-
-
-def cv2_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
+def cv2_to_qpixmap(cv_img: np.ndarray):
     """
-    Convert OpenCV BGR image array to PySide6 QPixmap.
+    Convert OpenCV BGR image array to PySide6 QPixmap (Desktop GUI Helper).
     """
+    try:
+        from PySide6.QtGui import QImage, QPixmap
+    except ImportError:
+        return None
+
     if cv_img is None or cv_img.size == 0:
         return QPixmap()
 
