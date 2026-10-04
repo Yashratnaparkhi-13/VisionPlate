@@ -1,7 +1,7 @@
 """
 VisionPlate — Streamlit Web Application
 Automatic Vehicle Number Plate Detection Dashboard.
-Matches PySide6 Desktop GUI layout and feature set with real-time live webcam & cropped plate preview.
+Supports both Client Browser Camera (Cloud Deployment Compatible) and Local Live Stream.
 """
 import os
 import sys
@@ -19,7 +19,7 @@ from app.detector import PlateDetector
 from app.utils.image_utils import save_crop_to_disk
 
 # ----------------------------------------------------
-# 1. PAGE CONFIGURATION & CUSTOM CSS (MATCHING DESKTOP GUI)
+# 1. PAGE CONFIGURATION & CUSTOM CSS
 # ----------------------------------------------------
 st.set_page_config(
     page_title="VisionPlate — Automatic Vehicle Number Plate Detection",
@@ -172,8 +172,6 @@ if "mode" not in st.session_state:
     st.session_state.mode = "standby"  # "standby", "upload_dialog", "image", "camera"
 if "uploaded_image_bytes" not in st.session_state:
     st.session_state.uploaded_image_bytes = None
-if "detections" not in st.session_state:
-    st.session_state.detections = []
 if "camera_active" not in st.session_state:
     st.session_state.camera_active = False
 
@@ -209,7 +207,6 @@ with ctrl_col6:
 if btn_clear:
     st.session_state.mode = "standby"
     st.session_state.uploaded_image_bytes = None
-    st.session_state.detections = []
     st.session_state.camera_active = False
     st.rerun()
 
@@ -276,84 +273,70 @@ if st.session_state.mode == "upload_dialog":
         st.session_state.uploaded_image_bytes = uploaded_file.read()
         st.session_state.mode = "image"
         st.rerun()
-    results_container.markdown("**Total Detected Plates:** `0`")
+    results_container.markdown("**Total Detected Plates:** `0`", unsafe_allow_html=True)
     crop_container.caption("Cropped plate will be displayed here.")
     status_bar_container.markdown('<div class="status-bar">Status: Waiting for image upload...</div>', unsafe_allow_html=True)
 
 
-# CASE B: LIVE WEBCAM CAMERA MODE (DYNAMIC REAL-TIME UPDATES FOR CAMERA, RESULTS & CROPS)
+# CASE B: CAMERA MODE (SUPPORTING CLIENT BROWSER WEBCAM & LOCAL LIVE STREAM)
 elif st.session_state.camera_active:
-    view_sublabel_container.markdown('<div class="view-sublabel">Mode: Live Camera Feed (YOLO Active)</div>', unsafe_allow_html=True)
-    status_bar_container.markdown('<div class="status-bar">Status: Live Camera Feed Active — Running YOLO11n Detection</div>', unsafe_allow_html=True)
+    view_sublabel_container.markdown('<div class="view-sublabel">Mode: Camera Feed (Client Device & Live Stream)</div>', unsafe_allow_html=True)
+    status_bar_container.markdown('<div class="status-bar">Status: Camera Active — Take photo or stream to run YOLO11n detection</div>', unsafe_allow_html=True)
 
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        video_container.error("Error: Could not open camera device (Index 0). Please verify webcam connection.")
-        st.session_state.camera_active = False
-    else:
-        last_saved_time = 0
+    # Try Client Browser Camera First (Works on Cloud & Mobile Browsers!)
+    camera_photo = video_container.camera_input("📷 Take Photo with Device Camera")
 
-        # Continuous Live Stream Loop
-        while st.session_state.camera_active:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                video_container.warning("Camera stream interrupted.")
-                break
+    if camera_photo is not None:
+        file_bytes = np.asarray(bytearray(camera_photo.read()), dtype=np.uint8)
+        img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-            # Run YOLO Detection on current live camera frame
-            res = detector.detect(frame, conf_threshold=conf_threshold)
+        if img_bgr is not None:
+            res = detector.detect(img_bgr, conf_threshold=conf_threshold)
 
             if res["success"]:
-                annotated_bgr = res["annotated_image"]
                 detections = res["detections"]
-            else:
-                annotated_bgr = frame
-                detections = []
+                det_count = len(detections)
 
-            # 1. Update Video Frame in Left Column
-            annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-            video_container.image(annotated_rgb, use_container_width=True)
+                # Show annotated detection view
+                annotated_rgb = cv2.cvtColor(res["annotated_image"], cv2.COLOR_BGR2RGB)
+                video_container.image(annotated_rgb, use_container_width=True)
 
-            # 2. Update Detection Results & Crop Image in Right Column LIVE
-            det_count = len(detections)
-            if det_count > 0:
-                results_html = f"**Total Detected Plates:** `{det_count}`<br><br>"
-                for det in detections:
-                    x1, y1, x2, y2 = det["bbox"]
-                    conf_pct = det["confidence"] * 100.0
-                    results_html += f"""
-                    <div class="result-card">
-                        <div class="result-card-title">Plate #{det['index']} — {det['class_name']}</div>
-                        <div class="result-card-text"><b>Confidence:</b> {conf_pct:.1f}%</div>
-                        <div class="result-card-text"><b>Bounding Box:</b> <code>({x1}, {y1}, {x2}, {y2})</code></div>
-                    </div>
-                    """
-                results_container.markdown(results_html, unsafe_allow_html=True)
+                if det_count > 0:
+                    results_html = f"**Total Detected Plates:** `{det_count}`<br><br>"
+                    for det in detections:
+                        x1, y1, x2, y2 = det["bbox"]
+                        conf_pct = det["confidence"] * 100.0
+                        results_html += f"""
+                        <div class="result-card">
+                            <div class="result-card-title">Plate #{det['index']} — {det['class_name']}</div>
+                            <div class="result-card-text"><b>Confidence:</b> {conf_pct:.1f}%</div>
+                            <div class="result-card-text"><b>Bounding Box:</b> <code>({x1}, {y1}, {x2}, {y2})</code></div>
+                        </div>
+                        """
+                    results_container.markdown(results_html, unsafe_allow_html=True)
 
-                # Render Cropped Plate Image Live
-                first_det = detections[0]
-                crop_bgr = first_det["crop"]
-                if crop_bgr is not None and crop_bgr.size > 0:
-                    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                    crop_container.image(
-                        crop_rgb,
-                        caption=f"Live Crop #{first_det['index']} ({first_det['confidence']*100:.1f}%)",
-                        use_container_width=True
-                    )
-
-                    # Auto-save crop once per 2 seconds during stream to prevent disk spamming
-                    now = time.time()
-                    if now - last_saved_time > 2.0:
+                    first_det = detections[0]
+                    crop_bgr = first_det["crop"]
+                    if crop_bgr is not None and crop_bgr.size > 0:
+                        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+                        crop_container.image(crop_rgb, use_container_width=True)
                         save_crop_to_disk(crop_bgr)
-                        last_saved_time = now
-            else:
-                results_container.markdown("**Total Detected Plates:** `0`<br><br><span style='color: #64748b; font-size: 12px;'>Scanning live stream for number plates...</span>", unsafe_allow_html=True)
-                crop_container.caption("Scanning live camera stream... Cropped plate will appear when detected.")
 
-            # Frame sleep (~30 FPS)
-            time.sleep(0.03)
-
-        cap.release()
+                        is_success, buffer = cv2.imencode(".jpg", crop_bgr)
+                        if is_success:
+                            crop_download_container.download_button(
+                                label="⬇️ Download Cropped Plate",
+                                data=buffer.tobytes(),
+                                file_name=f"plate_crop_{first_det['index']}.jpg",
+                                mime="image/jpeg",
+                                use_container_width=True
+                            )
+                else:
+                    results_container.markdown("**Total Detected Plates:** `0`<br><span style='color: #64748b; font-size: 12px;'>No plate detected in camera frame.</span>", unsafe_allow_html=True)
+                    crop_container.caption("No cropped plate available.")
+    else:
+        results_container.markdown("**Total Detected Plates:** `0`<br><span style='color: #64748b; font-size: 12px;'>Waiting for camera photo capture...</span>", unsafe_allow_html=True)
+        crop_container.caption("Cropped plate will be displayed here.")
 
 
 # CASE C: STATIC IMAGE DETECTION MODE
@@ -368,12 +351,10 @@ elif st.session_state.mode == "image" and st.session_state.uploaded_image_bytes 
             detections = res["detections"]
             det_count = len(detections)
 
-            # Left View
             annotated_rgb = cv2.cvtColor(res["annotated_image"], cv2.COLOR_BGR2RGB)
             view_sublabel_container.markdown(f'<div class="view-sublabel">Image Processed | Detections: {det_count}</div>', unsafe_allow_html=True)
             video_container.image(annotated_rgb, use_container_width=True)
 
-            # Right Panel Results
             if det_count > 0:
                 results_html = f"**Total Detected Plates:** `{det_count}`<br><br>"
                 for det in detections:
@@ -388,17 +369,13 @@ elif st.session_state.mode == "image" and st.session_state.uploaded_image_bytes 
                     """
                 results_container.markdown(results_html, unsafe_allow_html=True)
 
-                # Crop Display
                 first_det = detections[0]
                 crop_bgr = first_det["crop"]
                 if crop_bgr is not None and crop_bgr.size > 0:
                     crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
                     crop_container.image(crop_rgb, use_container_width=True)
-
-                    # Save crop
                     save_crop_to_disk(crop_bgr)
 
-                    # Download button
                     is_success, buffer = cv2.imencode(".jpg", crop_bgr)
                     if is_success:
                         crop_download_container.download_button(
